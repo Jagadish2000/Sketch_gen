@@ -1,16 +1,20 @@
 """ Sketch-RNN Implementation in Keras - Model"""
-from keras.models import Model
-from keras.layers import Input
-from keras.layers.merge import Concatenate
-from keras.layers.core import RepeatVector
-from keras.layers import Dense, LSTM, CuDNNLSTM, Bidirectional, Lambda
-from keras.activations import softmax, exponential, tanh
-from keras import backend as K
-from keras.initializers import RandomNormal
-from keras.losses import categorical_crossentropy
-from keras.optimizers import Adam, SGD
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Concatenate
+from tensorflow.keras.layers import RepeatVector
+from tensorflow.keras.layers import Dense, LSTM, Bidirectional, Lambda
+from tensorflow.keras.activations import softmax, exponential, tanh
+from tensorflow.compat.v1.keras import backend as K
+from tensorflow.keras.initializers import RandomNormal
+from tensorflow.keras.losses import categorical_crossentropy
+from tensorflow.keras.optimizers import Adam, SGD
+from tensorflow.compat.v1.keras.layers import CuDNNLSTM
 import numpy as np
 import random
+import tensorflow as tf
+tf.compat.v1.disable_eager_execution()
+tf.compat.v1.experimental.output_all_intermediates(True)
 
 
 def get_default_hparams():
@@ -19,7 +23,7 @@ def get_default_hparams():
         # Experiment Params:
         'is_training': True,  # train mode (relevant only for accelerated LSTM mode)
         'data_set': 'cat',  # datasets to train on
-        'epochs': 50,  # how many times to go over the full train set (on average, since batches are drawn randomly)
+        'epochs': 25,  # how many times to go over the full train set (on average, since batches are drawn randomly)
         'save_every': None, # Batches between checkpoints creation and validation set evaluation. Once an epoch if None.
         'batch_size': 100,  # Minibatch size. Recommend leaving at 100.
         'accelerate_LSTM': False,  # Flag for using CuDNNLSTM layer, gpu + tf backend only
@@ -37,7 +41,7 @@ def get_default_hparams():
         'z_size': 128,  # Size of latent vector z. Recommended 32, 64 or 128.
         'enc_rnn_size': 256,  # Units in encoder RNN.
         'dec_rnn_size': 512,  # Units in decoder RNN.
-        'use_recurrent_dropout': True,  # Dropout with memory loss. Recommended
+        'use_recurrent_dropout': False,  # Dropout with memory loss. Recommended
         'recurrent_dropout_prob': 0.9,  # Probability of recurrent dropout keep.
         'num_mixture': 20,  # Number of mixtures in Gaussian mixture model.
         # Data pre-processing Params:
@@ -90,9 +94,7 @@ class Seq2seqModel(object):
         else:
             # Note that in inference LSTM is always selected (even in accelerated mode) so inference on CPU is supported
             lstm_layer_encoder = LSTM(units=self.hps['enc_rnn_size'], recurrent_dropout=recurrent_dropout)
-            lstm_layer_decoder = LSTM(units=self.hps['dec_rnn_size'], recurrent_dropout=recurrent_dropout,
-                                      return_sequences=True, return_state=True)
-
+            lstm_layer_decoder = LSTM(units=self.hps['dec_rnn_size'], recurrent_dropout=recurrent_dropout,return_sequences=True, return_state=True)
         # Encoder, bidirectional LSTM:
         encoder = Bidirectional(lstm_layer_encoder, merge_mode='concat')(self.encoder_input)
 
@@ -128,7 +130,6 @@ class Seq2seqModel(object):
 
         # Build Keras model
         model_o = Model([self.encoder_input, decoder_input], output)
-
         return model_o
 
     def latent_z(self, encoder_output):
@@ -149,16 +150,15 @@ class Seq2seqModel(object):
         return Lambda(transform2layer)([self.mu, self.sigma])
 
     def calculate_kl_loss(self, *args, **kwargs):
-        #This function calculates the Kullback Leiber loss(KL loss)
-        #KL loss= loss between the encoded svg input and the same decoded svg image
-
+        """ Function to calculate the KL loss term.
+         Considers the tolerance value for which optimization for KL should stop """
+        # kullback Leibler loss between normal distributions
         kl_cost = -0.5*K.mean(1+self.sigma-K.square(self.mu)-K.exp(self.sigma))
-
-        #Optimization of KL Loss will stop when kl_cost is lower than 'kl_tolerance'(hyperparameter)
+        
         return K.maximum(kl_cost, self.hps['kl_tolerance'])
 
     def calculate_md_loss(self, y_true, y_pred):
-        #This function calculates the Reconstruction loss 
+        """ calculate reconstruction (mixture density) loss """
         # Parse the output tensor to appropriate mixture density coefficients:
         out = self.get_mixture_coef(y_pred)
         [o_pi, o_mu1, o_mu2, o_sigma1, o_sigma2, o_corr, o_pen, o_pen_logits] = out
@@ -169,7 +169,6 @@ class Seq2seqModel(object):
 
         # Get the density value of each mixture, estimated for the target coordinates:
         pdf_values = self.keras_2d_normal(x1_data, x2_data, o_mu1, o_mu2, o_sigma1, o_sigma2, o_corr)
-
         # Compute the GMM values (weighted sum of mixtures using pi values)
         gmm_values = pdf_values * o_pi
         gmm_values = K.sum(gmm_values, 2, keepdims=True)
@@ -192,36 +191,32 @@ class Seq2seqModel(object):
 
         # Total loss
         result = gmm_loss + pen_loss
-
         r_cost = K.mean(result)  # todo: Keras already averages over all tensor values, this might be redundant
+        
         return r_cost
 
-
     def model_loss(self):
-        #This function calculates the weight required to compute the total loss.
-        #It also returns a function which calculates the complete loss.
-
+        """" Wrapper function which calculates auxiliary values for the complete loss function.
+         Returns a *function* which calculates the complete loss given only the input and target output """
         # KL loss
         kl_loss = self.calculate_kl_loss
         # Reconstruction loss
         md_loss_func = self.calculate_md_loss
 
-        # Total loss= Reconstruction loss+ (KL weight)*(KL Loss)
-        # KL weight is required for the total loss
+        # KL weight (to be used by total loss and by annealing scheduler)
         self.kl_weight = K.variable(self.hps['kl_weight_start'], name='kl_weight')
         kl_weight = self.kl_weight
 
         def seq2seq_loss(y_true, y_pred):
-            # Function for final loss calculation to be passed to optimizer
+            """ Final loss calculation function to be passed to optimizer"""
             # Reconstruction loss
             md_loss = md_loss_func(y_true, y_pred)
             # Full loss
+
             model_loss = kl_weight*kl_loss() + md_loss
             return model_loss
 
         return seq2seq_loss
-
-
 
     def get_mixture_coef(self, out_tensor):
         """ Parses the output tensor to appropriate mixture density coefficients"""
@@ -268,6 +263,151 @@ class Seq2seqModel(object):
         print('Model Compiled!')
 
     def load_trained_weights(self, weights):
-        """ Loads weights of a pre-trained model. 'weights' is path to h5 model \ weights file"""
+        """ Loads weights of a pre-trained model. 'weights' is path to h5 model\weights file"""
         self.model.load_weights(weights)
         print('Weights from {} loaded successfully'.format(weights))
+
+    def make_sampling_models(self):
+        """ Creates models for various input-output combinations
+         that are used when sampling and encoding\decoding specific strokes """
+        models = {}
+
+        # Model 1: Latent vector to initial state. Model gets batch_z and outputs initial_state
+        batch_z = Input(shape=(self.hps['z_size'],))
+        initial_state = self.initial_state(batch_z)
+        models['z_to_init_model'] = Model(inputs=batch_z, outputs=initial_state)
+
+        # Model 2: sample_output_model. Model that gets decoder input, initial state and batch_z.
+        # Outputs final state and mixture parameters.
+
+        # Inputs:
+        decoder_input = Input(shape=(1, 5))
+        initial_h_input = Input(shape=(self.decoder.units,))
+        initial_c_input = Input(shape=(self.decoder.units,))
+
+        # Build parts of model needed to reach desired output. apply them on the new inputs:
+        # Concatenate z vector to expected outputs and this feed input to decoder:
+        tile_z = RepeatVector(1)(batch_z)
+        decoder_full_input = Concatenate()([decoder_input, tile_z])
+        # Apply decoder on new inputs
+        [decoder_output, final_state_1, final_state_2] = self.decoder(decoder_full_input,
+                                                                      initial_state=[initial_h_input, initial_c_input])
+        final_state = [final_state_1, final_state_2]
+        # Apply original output layer
+        model_output = self.output(decoder_output)
+        # Get mixture coef' based on output layer
+        mixture_params = Lambda(self.get_mixture_coef)(model_output)
+        models['sample_output_model'] = Model(inputs=[decoder_input, initial_h_input, initial_c_input, batch_z],
+                                              outputs=final_state + mixture_params)
+
+        # Model 3: Encoder model. Stroke input to latent vector
+        models['encoder_model'] = Model(inputs=self.encoder_input, outputs=self.batch_z)
+
+        self.sample_models = models
+        print('Created Sub Models!')
+        print("dude, it's here",self.sample_models)
+
+
+def sample(seq2seq_model, seq_len=250, temperature=1.0, greedy_mode=False, z=None):
+    """Samples a sequence from a pre-trained model."""
+
+    hps = seq2seq_model.hps
+
+    def adjust_temp(pi_pdf, temp):
+        pi_pdf = np.log(pi_pdf) / temp
+        pi_pdf -= pi_pdf.max()
+        pi_pdf = np.exp(pi_pdf)
+        pi_pdf /= pi_pdf.sum()
+        return pi_pdf
+
+    def get_pi_idx(x, pdf, temp=1.0, greedy=False):
+        """Samples from a pdf, optionally greedily."""
+        if greedy:
+            return np.argmax(pdf)
+        pdf = adjust_temp(np.copy(pdf), temp)
+        accumulate = 0
+        for i in range(0, pdf.size):
+            accumulate += pdf[i]
+            if accumulate >= x:
+                return i
+        print('Error with sampling ensemble.')
+        return -1
+
+    def sample_gaussian_2d(mu1, mu2, s1, s2, rho, temp=1.0, greedy=False):
+        """ Sample from a bivariate normal distribution """
+        if greedy:
+            return mu1, mu2
+        mean = [mu1, mu2]
+        s1 *= temp * temp
+        s2 *= temp * temp
+        cov = [[s1 * s1, rho * s1 * s2], [rho * s1 * s2, s2 * s2]]
+        x = np.random.multivariate_normal(mean, cov, 1)
+        return x[0][0], x[0][1]
+
+    # Initial stroke:
+    prev_x = np.zeros((1, 1, 5), dtype=np.float32)
+    prev_x[0, 0, 2] = 1
+
+    # If latent vector is not specified:
+    if z is None:
+        z = np.random.randn(1, hps['z_size'])
+
+    # Get the model that gets batch_z and outputs initial_state:
+    z_to_init_model = seq2seq_model.sample_models['z_to_init_model']
+    # Get value of initial state:
+    prev_state = z_to_init_model.predict(z)
+    # Split to hidden and cell states:
+    prev_state = [prev_state[:, :seq2seq_model.decoder.units], prev_state[:, seq2seq_model.decoder.units:]]
+
+    # Get the model that gets decoder input, initial state and batch_z. outputs final state and mixture parameters.
+    sample_output_model = seq2seq_model.sample_models['sample_output_model']
+
+    # Initialize strokes matrix
+    strokes = np.zeros((seq_len, 5), dtype=np.float32)
+    mixture_params = []
+
+    for i in range(seq_len):
+
+        # Arrange inputs
+        feed = {
+            'decoder input': prev_x,
+            'initial_state': prev_state,
+            'batch_z': z
+        }
+        # Get decoder states and mixture parameters:
+        model_outputs_list = sample_output_model.predict([feed['decoder input'],
+                                                          feed['initial_state'][0],
+                                                          feed['initial_state'][1],
+                                                          feed['batch_z']])
+        # Parse output list:
+        next_state = model_outputs_list[:2]
+        mixture_params_val = model_outputs_list[2:]
+        [o_pi, o_mu1, o_mu2, o_sigma1, o_sigma2, o_corr, o_pen, _] = mixture_params_val
+
+
+        idx = get_pi_idx(random.random(), o_pi[0][0], temperature, greedy_mode)
+
+        idx_eos = get_pi_idx(random.random(), o_pen[0][0], temperature, greedy_mode)
+        eos = [0, 0, 0]
+        eos[idx_eos] = 1
+
+        next_x1, next_x2 = sample_gaussian_2d(o_mu1[0][0][idx], o_mu2[0][0][idx],
+                                              o_sigma1[0][0][idx], o_sigma2[0][0][idx],
+                                              o_corr[0][0][idx], np.sqrt(temperature), greedy_mode)
+
+        strokes[i, :] = [next_x1, next_x2, eos[0], eos[1], eos[2]]
+
+        params = [
+            o_pi[0][0], o_mu1[0][0], o_mu2[0][0], o_sigma1[0][0], o_sigma2[0][0], o_corr[0][0],
+            o_pen[0][0]
+        ]
+
+        mixture_params.append(params)
+
+        prev_x = np.zeros((1, 1, 5), dtype=np.float32)
+        prev_x[0][0] = np.array(strokes[i, :], dtype=np.float32)
+        # prev_x[0][0] = np.array(
+        #     [next_x1, next_x2, eos[0], eos[1], eos[2]], dtype=np.float32)
+        prev_state = next_state
+
+    return strokes, mixture_params
