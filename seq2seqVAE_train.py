@@ -1,3 +1,6 @@
+# By: Eyal Zakkay, 2018
+# Ported to Keras from the official Tensorflow implementation by Magenta
+
 """ Sketch-RNN Implementation in Keras - Training"""
 
 from __future__ import absolute_import
@@ -113,7 +116,7 @@ if __name__ == '__main__':
                         help='Name of .npz file. (default: %(default)s)')
 
     parser.add_argument('--experiment_dir', type=str,
-                        default='\\tmp\sketch_rnn\experiments',
+                        default='experiments',
                         help='Width of output image. (default: %(default)s)')
 
     parser.add_argument('--checkpoint', type=str,
@@ -130,11 +133,11 @@ if __name__ == '__main__':
     # Todo: support use of multiple datasets using command line. currently only supported when editing default params
     if isinstance(args.data_set, list):  # more than one dataset
         sets = [os.path.splitext(s)[0] for s in args.data_set]
-        experiment_path = os.path.join(args.experiment_dir, "{}\\exp".format('_'.join(sets)))
+        experiment_path = os.path.join(args.experiment_dir, "{}/exp".format('_'.join(sets)))
         args.data_set = [s+'.npz' for s in sets]
     else:
         data_set = os.path.splitext(args.data_set)[0]
-        experiment_path = os.path.join(args.experiment_dir, "{}\\exp".format(data_set))
+        experiment_path = os.path.join(args.experiment_dir, "{}/exp".format(data_set))
         args.data_set = data_set+'.npz'
 
     # Create a unique experiment folder

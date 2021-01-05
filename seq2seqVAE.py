@@ -1,3 +1,6 @@
+# By: Eyal Zakkay, 2018
+# Ported to Keras from the official Tensorflow implementation by Magenta
+
 """ Sketch-RNN Implementation in Keras - Model"""
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input
@@ -9,7 +12,6 @@ from tensorflow.compat.v1.keras import backend as K
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.losses import categorical_crossentropy
 from tensorflow.keras.optimizers import Adam, SGD
-from tensorflow.compat.v1.keras.layers import CuDNNLSTM
 import numpy as np
 import random
 import tensorflow as tf
@@ -22,8 +24,8 @@ def get_default_hparams():
     params_dict = {
         # Experiment Params:
         'is_training': True,  # train mode (relevant only for accelerated LSTM mode)
-        'data_set': 'cat',  # datasets to train on
-        'epochs': 25,  # how many times to go over the full train set (on average, since batches are drawn randomly)
+        'data_set': 'mug',  # datasets to train on ['cat,'mug']
+        'epochs': 1,  # how many times to go over the full train set (on average, since batches are drawn randomly)
         'save_every': None, # Batches between checkpoints creation and validation set evaluation. Once an epoch if None.
         'batch_size': 100,  # Minibatch size. Recommend leaving at 100.
         'accelerate_LSTM': False,  # Flag for using CuDNNLSTM layer, gpu + tf backend only
@@ -38,9 +40,9 @@ def get_default_hparams():
         'kl_decay_rate': 0.99995,  # KL annealing decay rate per minibatch.
         'grad_clip': 1.0,  # Gradient clipping. Recommend leaving at 1.0.
         # Architecture Params:
-        'z_size': 128,  # Size of latent vector z. Recommended 32, 64 or 128.
-        'enc_rnn_size': 256,  # Units in encoder RNN.
-        'dec_rnn_size': 512,  # Units in decoder RNN.
+        'z_size': 64,  # Size of latent vector z. Recommended 32, 64 or 128.
+        'enc_rnn_size': 128,  # Units in encoder RNN.
+        'dec_rnn_size': 128,  # Units in decoder RNN.
         'use_recurrent_dropout': False,  # Dropout with memory loss. Recommended
         'recurrent_dropout_prob': 0.9,  # Probability of recurrent dropout keep.
         'num_mixture': 20,  # Number of mixtures in Gaussian mixture model.
@@ -86,15 +88,10 @@ class Seq2seqModel(object):
             (self.hps['use_recurrent_dropout'] and (self.hps['accelerate_LSTM'] is False)) else 0
 
         # Option to use the accelerated version of LSTM, CuDNN LSTM. Much faster, but no support for recurrent dropout:
-        if self.hps['accelerate_LSTM'] and self.hps['is_training']:
-            lstm_layer_encoder = CuDNNLSTM(units=self.hps['enc_rnn_size'])
-            lstm_layer_decoder = CuDNNLSTM(units=self.hps['dec_rnn_size'], return_sequences=True, return_state=True)
-            self.hps['use_recurrent_dropout'] = False
-            print('Using CuDNNLSTM - No Recurrent Dropout!')
-        else:
-            # Note that in inference LSTM is always selected (even in accelerated mode) so inference on CPU is supported
-            lstm_layer_encoder = LSTM(units=self.hps['enc_rnn_size'], recurrent_dropout=recurrent_dropout)
-            lstm_layer_decoder = LSTM(units=self.hps['dec_rnn_size'], recurrent_dropout=recurrent_dropout,return_sequences=True, return_state=True)
+        lstm_layer_encoder = LSTM(units=self.hps['enc_rnn_size'], recurrent_dropout=recurrent_dropout)
+        lstm_layer_decoder = LSTM(units=self.hps['dec_rnn_size'], recurrent_dropout=recurrent_dropout,
+                                      return_sequences=True, return_state=True)
+
         # Encoder, bidirectional LSTM:
         encoder = Bidirectional(lstm_layer_encoder, merge_mode='concat')(self.encoder_input)
 

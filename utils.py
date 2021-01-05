@@ -1,3 +1,4 @@
+# By: Eyal Zakkay, 2018
 # Ported to Keras from the official Tensorflow implementation by Magenta
 # Most utilities in 'utils' remained the same as in the official implementation
 
