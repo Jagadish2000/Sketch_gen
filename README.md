@@ -32,6 +32,8 @@ Decode : decodes sketch from latent space
 
 Encode and decode has another argument called temperature which controls the randomness of stroke length which basically sets how similar the decoded sketch is from the encoded one.
 ## Example Output
+![](output.png)
+
 
 
 
