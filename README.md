@@ -31,5 +31,8 @@ Interpolate- Used to create an interpolation series of length ‘n’ between 2 
 Decode : decodes sketch from latent space
 
 Encode and decode has another argument called temperature which controls the randomness of stroke length which basically sets how similar the decoded sketch is from the encoded one.
+## Example Output
+![](Input and Output.png)
+
 
 
