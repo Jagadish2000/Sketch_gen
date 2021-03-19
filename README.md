@@ -18,7 +18,8 @@ To train the model, you need a dataset in the appropriate format. You can downlo
 [by clicking here](https://console.cloud.google.com/storage/browser/quickdraw_dataset/sketchrnn?pli=1)
 and put the dataset in a directory in the sketch_rnn directory
 
-use:.
+use:
+
 ````python seq2seqVAE_train --data_dir=<name_of_the_directory_where_datasets_are> --data_set=<name_of_dataset(if using multiple datasets, use a list-[]> --experiment_dir=\sketch_rnn\experiments ````   
 ## Functionality
 Functions include: 
